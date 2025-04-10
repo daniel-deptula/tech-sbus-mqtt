@@ -118,7 +118,9 @@ When you have all the addresses collected, create the full configuration file an
 Once the script is started and new devices and entities appear in Home Assistant, I recommend to restart the Tech controller(s) so that Home Assistant becomes immediately aware of all the zones and parameters which aren't repeated regularly (for example the target temperatures for each zone).
 
 # Protocol
-The script is a result of my reverse engineering of the protocol so only limited functionality is available at the moment. If time permits new features may be added in future because some more data is transmitted. Everyone's encouraged to contribute.
+The script is a result of my reverse engineering of the protocol so only limited functionality is available at the moment. If time permits new features may be added in future because some more data is transmitted. Everyone's encouraged to contribute.\
+\
+What I currently know about the protocol: [TECH_RS485_PROTOCOL](TECH_RS485_PROTOCOL.md)
 
 # Devices tested
 - L-X WiFi - central controller
