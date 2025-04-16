@@ -91,37 +91,37 @@ class TechSbusMessageToMqttProcessor:
             while i < len(self.data):
                 item_len = self.data[i]
                 if item_len > 0 and i + item_len < len(self.data):
-                    if self.data[i + 1] == 0:
+                    if item_len == 4 and self.data[i + 1] == 0:
                         # Room temperature
                         self.room_temp = float(
                             int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little', signed=False)) / 10
                         self.process_room_temperature()
-                    elif self.data[i + 1] == 1:
+                    elif item_len == 4 and self.data[i + 1] == 1:
                         # Floor temperature
                         self.floor_temp = float(
                             int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little', signed=False)) / 10
                         self.process_floor_temperature()
-                    elif self.data[i + 1] == 2:
+                    elif item_len == 4 and self.data[i + 1] == 2:
                         # Humidity
                         self.humidity = float(
                             int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little', signed=False)) / 10
                         self.process_humidity()
-                    elif self.data[i + 1] == 0x14:
+                    elif item_len == 6 and self.data[i + 1] == 0x14:
                         # Heating start/stop
                         self.status = int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little',
                                                      signed=False)
                         self.process_status()
-                    elif self.data[i + 1] == 0x20:
+                    elif item_len == 6 and self.data[i + 1] == 0x20:
                         # Target temperature for how long
                         self.target_temp_time = int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little',
                                                                signed=False)
                         self.process_target_temp_time()
-                    elif self.data[i + 1] == 0x21:
+                    elif item_len == 6 and self.data[i + 1] == 0x21:
                         # Target temperature
                         self.target_temp = float(
                             int.from_bytes(self.data[i + 3:i + item_len + 1], byteorder='little', signed=False)) / 10
                         self.process_target_temp()
-                    elif self.data[i + 1] == 0x26 and item_len == 6:
+                    elif item_len == 6 and self.data[i + 1] == 0x26 and item_len == 6:
                         # Time + target temperature (what's the purpose of it?!)
                         self.target_temp_time2 = int.from_bytes(self.data[i + 3:i + 5], byteorder='little',
                                                                 signed=False)
@@ -130,7 +130,7 @@ class TechSbusMessageToMqttProcessor:
                         self.process_target_temp2()
                     else:
                         # Unknown parameter
-                        logger.debug(self.fromto_header + ",Unknown parameter: " + hex(self.data[i + 1]))
+                        logger.debug(self.fromto_header + ",Unknown parameter: " + self.data[i:i + item_len + 1].hex(' '))
                 else:
                     # Something not supported
                     logger.debug(self.fromto_header + ",Unsupported data: " + self.data.hex(' '))
