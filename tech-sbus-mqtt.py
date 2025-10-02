@@ -228,28 +228,29 @@ class SerialPort:
                     strmsg = msg[0:-1].decode('ascii')
                     logger.debug(f"[{self.serial_port}] Received: {strmsg}")
                     if len(strmsg) > 6:
-                        if strmsg[0] != '>':
+                        if strmsg[0] == '>':
+                            # first char is ">"
+                            # "==" at the end of the base64-encoded string is missing
+                            # The last 6 characters are encoded CRC-32
+                            encmsg = strmsg[1:-6]
+                            enccrc = strmsg[-6:] + "=="
+                            logger.debug(f"[{self.serial_port}] Base64 encoded message: {encmsg}")
+                            logger.debug(f"[{self.serial_port}] Base64 encoded CRC-32: {enccrc}")
+                            try:
+                                decoded_msg = base64.b64decode(encmsg)
+                                logger.debug(f"[{self.serial_port}] Base64 decoded message: " + decoded_msg.hex(' '))
+                                decoded_crc = base64.b64decode(enccrc)
+                                # Compute CRC-32 of the decoded message
+                                crc = binascii.crc32(decoded_msg)
+                                if crc.to_bytes(4, byteorder='little', signed=False) == decoded_crc:
+                                    logger.debug(f"[{self.serial_port}] CRC check pass")
+                                    TechSbusMessageToMqttProcessor(decoded_msg, self.mqtt_publisher)
+                                else:
+                                    logger.error(f"[{self.serial_port}] CRC check failed")
+                            except Exception as e:
+                                logger.error(f"[{self.serial_port}] Message processing error: " + repr(e))
+                        else:
                             logger.error(f"[{self.serial_port}] Missing message start!")
-                        # first char is ">"
-                        # "==" at the end of the base64-encoded string is missing
-                        # The last 6 characters are encoded CRC-32
-                        encmsg = strmsg[1:-6]
-                        enccrc = strmsg[-6:] + "=="
-                        logger.debug(f"[{self.serial_port}] Base64 encoded message: {encmsg}")
-                        logger.debug(f"[{self.serial_port}] Base64 encoded CRC-32: {enccrc}")
-                        try:
-                            decoded_msg = base64.b64decode(encmsg)
-                            logger.debug(f"[{self.serial_port}] Base64 decoded message: " + decoded_msg.hex(' '))
-                            decoded_crc = base64.b64decode(enccrc)
-                            # Compute CRC-32 of the decoded message
-                            crc = binascii.crc32(decoded_msg)
-                            if crc.to_bytes(4, byteorder='little', signed=False) == decoded_crc:
-                                logger.debug(f"[{self.serial_port}] CRC check pass")
-                                TechSbusMessageToMqttProcessor(decoded_msg, self.mqtt_publisher)
-                            else:
-                                logger.error(f"[{self.serial_port}] CRC check failed")
-                        except Exception as e:
-                            logger.error(f"[{self.serial_port}] Message processing error: " + repr(e))
                     else:
                         logger.error(f"[{self.serial_port}] Message too short: " + str(len(strmsg)))
 
