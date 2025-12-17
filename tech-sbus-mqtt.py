@@ -1,4 +1,5 @@
 import serial
+import serial.threaded
 import threading
 import yaml
 import json
@@ -12,7 +13,6 @@ import os
 from pid import PidFile
 
 LOG_FORMAT = ('%(asctime)-15s %(levelname)-8s %(message)s')
-LOG_DATEFORMAT = ('%Y-%m-%d %H:%M:%S')
 
 logger = logging.getLogger(__name__)
 topic_prefix = None
@@ -20,6 +20,7 @@ status_topic = None
 ha_discovery_prefix = "homeassistant"
 # all devices, keys are addresses
 all_devices = {}
+serial_instances = {}
 
 
 class TechDevice:
@@ -28,6 +29,7 @@ class TechDevice:
         self.name = name
         self.model = model
         self.serial_no = serial_no
+        self.serial_port = ""
 
 class TechController(TechDevice):
     def __init__(self, address: str, name: str, model: str, serial_no: str):
@@ -39,7 +41,7 @@ class TechRoomRegulator(TechDevice):
         self.controller = controller
 
 class TechSbusMessageToMqttProcessor:
-    def __init__(self, msg, mqtt_publisher):
+    def __init__(self, msg, mqtt_publisher, serial_port_name):
         self.target_temp2 = None
         self.target_temp_time2 = None
         self.target_temp = None
@@ -52,6 +54,7 @@ class TechSbusMessageToMqttProcessor:
         self.timestamp = time.time()
         self.msg = msg
         self.mqtt_publisher = mqtt_publisher
+        self.serial_port_name = serial_port_name
         if len(self.msg) > 12:
             self.src_addr = self.msg[0:4]
             self.dst_addr = self.msg[6:10]
@@ -138,15 +141,15 @@ class TechSbusMessageToMqttProcessor:
 
     def process_room_temperature(self):
         logger.debug(self.fromto_header + ",room temperature," + str(self.room_temp))
-        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, "temperature/air/current", str(self.room_temp))
+        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, self.serial_port_name, "temperature/air/current", str(self.room_temp))
 
     def process_floor_temperature(self):
         logger.debug(self.fromto_header + ",floor temperature," + str(self.floor_temp))
-        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, "temperature/floor/current", str(self.floor_temp))
+        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, self.serial_port_name, "temperature/floor/current", str(self.floor_temp))
 
     def process_humidity(self):
         logger.debug(self.fromto_header + ",humidity," + str(self.humidity))
-        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, "humidity/current", str(self.humidity))
+        self.mqtt_publisher.mqtt_publish_msg(self.src_addr_str, self.serial_port_name, "humidity/current", str(self.humidity))
 
     def process_status(self):
         if self.status == 1:
@@ -160,7 +163,7 @@ class TechSbusMessageToMqttProcessor:
             addr = self.dst_addr_str
         else:
             addr = self.src_addr_str
-        self.mqtt_publisher.mqtt_publish_msg(addr, "heating", status_str)
+        self.mqtt_publisher.mqtt_publish_msg(addr, self.serial_port_name, "heating", status_str)
 
     def process_target_temp_time(self):
         if self.target_temp_time == 0xFFFFFFFF:
@@ -176,7 +179,7 @@ class TechSbusMessageToMqttProcessor:
             addr = self.dst_addr_str
         else:
             addr = self.src_addr_str
-        self.mqtt_publisher.mqtt_publish_msg(addr, "temperature/air/target/duration", time_str)
+        self.mqtt_publisher.mqtt_publish_msg(addr, self.serial_port_name, "temperature/air/target/duration", time_str)
 
     def process_target_temp(self):
         logger.debug(self.fromto_header + ",target temperature," + str(self.target_temp))
@@ -184,7 +187,7 @@ class TechSbusMessageToMqttProcessor:
             addr = self.dst_addr_str
         else:
             addr = self.src_addr_str
-        self.mqtt_publisher.mqtt_publish_msg(addr, "temperature/air/target", str(self.target_temp))
+        self.mqtt_publisher.mqtt_publish_msg(addr, self.serial_port_name, "temperature/air/target", str(self.target_temp))
 
     def process_target_temp2(self):
         if self.target_temp_time2 == 0xFFFF:
@@ -201,8 +204,8 @@ class TechSbusMessageToMqttProcessor:
             addr = self.dst_addr_str
         else:
             addr = self.src_addr_str
-        self.mqtt_publisher.mqtt_publish_msg(addr, "temperature/air/target2/duration", time_str)
-        self.mqtt_publisher.mqtt_publish_msg(addr, "temperature/air/target2", str(self.target_temp2))
+        self.mqtt_publisher.mqtt_publish_msg(addr, self.serial_port_name, "temperature/air/target2/duration", time_str)
+        self.mqtt_publisher.mqtt_publish_msg(addr, self.serial_port_name, "temperature/air/target2", str(self.target_temp2))
 
     def process_timestamp(self):
         my_timestamp = int(self.timestamp)
@@ -210,49 +213,89 @@ class TechSbusMessageToMqttProcessor:
         delta = my_timestamp + tzoffset - self.received_timestamp
         logger.info(self.fromto_header + ",timestamp," + str(self.received_timestamp) + "," + str(delta))
 
-class SerialPort:
-    def __init__(self, port_name, mqtt_publisher):
-        self.logger = logging.getLogger(SerialPort.__name__)
-        self.serial_port = port_name
+class SerialPortReader(serial.threaded.LineReader):
+    
+    TERMINATOR = b'\x0a'
+    
+    def connection_made(self, transport):
+        super(SerialPortReader, self).connection_made(transport)
+        self.serial_port_name = transport.serial.port
+        logger.info(f"Connected SerialPortReader {self.serial_port_name}")
+    
+    def __init__(self, mqtt_publisher):
+        super(SerialPortReader, self).__init__()
+        self.logger = logging.getLogger(SerialPortReader.__name__)
+        self.serial_port_name = ""
         self.mqtt_publisher = mqtt_publisher
-        logger.info("Initialized SerialPort " + port_name)
-
+        
     def __call__(self):
-        with serial.Serial(self.serial_port, 115200, parity=serial.PARITY_EVEN, bytesize=serial.SEVENBITS,
-                           timeout=None) as serial_conn:
-            while True:
-                # Read until LF (0x0A)
-                msg = serial_conn.read_until(expected='\x0a'.encode('utf-8'), size=None)
-                if len(msg) > 1:
-                    # Decoding the message
-                    strmsg = msg[0:-1].decode('ascii')
-                    logger.debug(f"[{self.serial_port}] Received: {strmsg}")
-                    if len(strmsg) > 6:
-                        if strmsg[0] == '>':
-                            # first char is ">"
-                            # "==" at the end of the base64-encoded string is missing
-                            # The last 6 characters are encoded CRC-32
-                            encmsg = strmsg[1:-6]
-                            enccrc = strmsg[-6:] + "=="
-                            logger.debug(f"[{self.serial_port}] Base64 encoded message: {encmsg}")
-                            logger.debug(f"[{self.serial_port}] Base64 encoded CRC-32: {enccrc}")
-                            try:
-                                decoded_msg = base64.b64decode(encmsg)
-                                logger.debug(f"[{self.serial_port}] Base64 decoded message: " + decoded_msg.hex(' '))
-                                decoded_crc = base64.b64decode(enccrc)
-                                # Compute CRC-32 of the decoded message
-                                crc = binascii.crc32(decoded_msg)
-                                if crc.to_bytes(4, byteorder='little', signed=False) == decoded_crc:
-                                    logger.debug(f"[{self.serial_port}] CRC check pass")
-                                    TechSbusMessageToMqttProcessor(decoded_msg, self.mqtt_publisher)
-                                else:
-                                    logger.error(f"[{self.serial_port}] CRC check failed")
-                            except Exception as e:
-                                logger.error(f"[{self.serial_port}] Message processing error: " + repr(e))
+        return self
+
+    def handle_line(self, strmsg):
+        if len(strmsg) > 1:
+            logger.debug(f"[{self.serial_port_name}] Received: {strmsg}")
+            if len(strmsg) > 6:
+                if strmsg[0] == '>':
+                    # first char is ">"
+                    # "==" at the end of the base64-encoded string is missing
+                    # The last 6 characters are encoded CRC-32
+                    encmsg = strmsg[1:-6]
+                    enccrc = strmsg[-6:] + "=="
+                    logger.debug(f"[{self.serial_port_name}] Base64 encoded message: {encmsg}")
+                    logger.debug(f"[{self.serial_port_name}] Base64 encoded CRC-32: {enccrc}")
+                    try:
+                        decoded_msg = base64.b64decode(encmsg)
+                        logger.debug(f"[{self.serial_port_name}] Base64 decoded message: " + decoded_msg.hex(' '))
+                        decoded_crc = base64.b64decode(enccrc)
+                        # Compute CRC-32 of the decoded message
+                        crc = binascii.crc32(decoded_msg)
+                        if crc.to_bytes(4, byteorder='little', signed=False) == decoded_crc:
+                            logger.debug(f"[{self.serial_port_name}] CRC check pass")
+                            TechSbusMessageToMqttProcessor(decoded_msg, self.mqtt_publisher, self.serial_port_name)
                         else:
-                            logger.error(f"[{self.serial_port}] Missing message start!")
-                    else:
-                        logger.error(f"[{self.serial_port}] Message too short: " + str(len(strmsg)))
+                            logger.error(f"[{self.serial_port_name}] CRC check failed")
+                    except Exception as e:
+                        logger.error(f"[{self.serial_port_name}] Message processing error: " + repr(e))
+                else:
+                    logger.error(f"[{self.serial_port_name}] Missing message start!")
+            else:
+                logger.error(f"[{self.serial_port_name}] Message too short: " + str(len(strmsg)))
+                
+    def write_line(self, data: bytes):
+        """
+        I'm overriding "write_line" to avoid unnecessary decoding/encoding, we have bytes object ready, not a string
+        """
+        return self.transport.write(data + self.TERMINATOR)
+
+    def connection_lost(self, exc):
+        if exc:
+            logger.error(f"[{self.serial_port_name}] Connection lost: {exc}")
+        logger.error(f"Serial port {self.serial_port_name} closed")
+
+    def send_tech_sbus_frame(self, msg: bytes):
+        crc = binascii.crc32(msg).to_bytes(4, byteorder='little', signed=False)
+        logger.debug(f"[{self.serial_port_name}] Message to be sent: " + msg.hex(' '))
+        logger.debug(f"[{self.serial_port_name}] CRC-32 to be sent: " + crc.hex(' '))
+        b64msg = base64.b64encode(msg)
+        b64crc = base64.b64encode(crc)[0:6]
+        frame = b'>' + b64msg + b64crc
+        logger.debug(f"[{self.serial_port_name}] Sending frame: {frame}")
+        bytes_written = self.write_line(frame)
+        logger.debug(f"[{self.serial_port_name}] Wrote {bytes_written} bytes.")
+
+    def send_temp_set_msg(self, src_addr: str, dst_addr: str, new_temp: float, duration: int):
+        self.send_tech_sbus_frame(self.contruct_temperature_set_msg(src_addr, dst_addr, new_temp, duration))
+        
+    def construct_tech_sbus_header(self, src_addr: str, dst_addr: str) -> bytes:
+        bytes_src_addr = bytes.fromhex(src_addr.replace('-', ''))
+        bytes_dst_addr = bytes.fromhex(dst_addr.replace('-', ''))
+        return bytes_src_addr + bytes([0x50, 0x00]) + bytes_dst_addr + bytes([0x50, 0x00])
+
+    def contruct_temperature_set_msg(self, src_addr: str, dst_addr: str, new_temp: float, duration: int) -> bytes:
+        bytes_duration = duration.to_bytes(2, 'little')
+        bytes_new_temp = int(round(new_temp*10)).to_bytes(2, 'little')
+        return self.construct_tech_sbus_header(src_addr, dst_addr) + bytes([0x06, 0x26, 0x00]) + bytes_duration + bytes_new_temp
+
 
 class MqttPublisher:
     def __init__(self, mqtt_config, all_devices: dict):
@@ -299,6 +342,9 @@ class MqttPublisher:
             self.published_regulator_addresses = set()
         else:
             client.publish(self.status_topic, "online", retain=True, qos=1)
+            # Subscribe to the temperature set topic
+            self.mqtt_client.message_callback_add(self.topic_prefix + "/+/temperature/air/target/set", self.on_target_temperature_set)
+            self.mqtt_client.subscribe(self.topic_prefix + "/+/temperature/air/target/set")
             self.connected_to_broker = True
             self.published_regulator_addresses = set()
             logger.info("Connected to MQTT broker")
@@ -325,9 +371,11 @@ class MqttPublisher:
         finally:
             self.publish_lock.release()
 
-    def mqtt_publish_msg(self, addr, topic, msg):
+    def mqtt_publish_msg(self, addr, serial_port_name, topic, msg):
         if addr not in self.published_regulator_addresses and addr in self.all_devices and isinstance(all_devices[addr], TechRoomRegulator):
             self.mqtt_publish_discovery_msgs(addr, all_devices[addr].name, all_devices[addr].model, all_devices[addr].serial_no)
+            all_devices[addr].serial_port = serial_port_name
+            all_devices[addr].controller.serial_port = serial_port_name
         self.mqtt_publish(self.topic_prefix + "/" + addr + "/" + topic, msg, False)
 
     def mqtt_publish_discovery_msgs(self, addr, name, model, serial_no):
@@ -392,13 +440,14 @@ class MqttPublisher:
                 "current_humidity_topic": self.topic_prefix + "/" + addr + "/humidity/current",
                 "current_temperature_topic": self.topic_prefix + "/" + addr + "/temperature/air/current",
                 "temperature_state_topic": self.topic_prefix + "/" + addr + "/temperature/air/target",
+                "temperature_command_topic": self.topic_prefix + "/" + addr + "/temperature/air/target/set",
                 "temp_step": 0.1,
                 "temperature_unit": "C",
                 "mode_state_topic": self.topic_prefix + "/" + addr + "/heating",
                 "mode_state_template": "{{ \"heat\" if value==\"on\" else \"off\" }}",
                 "action_topic": self.topic_prefix + "/" + addr + "/heating",
                 "action_template": "{{ \"heating\" if value==\"on\" else \"idle\" }}",
-                "entity_category ": "EntityCategory.DIAGNOSTIC",  # will change to EntityCategory.CONFIG when write is implemented
+                "entity_category ": "EntityCategory.CONFIG",
                 "modes": [ "off", "heat" ],
                 "availability_topic": self.status_topic,
                 "device": {
@@ -413,6 +462,30 @@ class MqttPublisher:
 
             self.published_regulator_addresses.add(addr)
 
+    def on_target_temperature_set(self, client, userdata, msg):
+        topic_parts = msg.topic.split('/')
+        if len(topic_parts) < 6:
+            logger.error(f"Invalid topic for target temperature set: {msg.topic}")
+            return
+        addr = topic_parts[-5]
+        if addr not in all_devices:
+            logger.error(f"Target temperature set: Address {addr} not known!")
+            return
+        if len(all_devices[addr].serial_port) < 1:
+            logger.error(f"Target temperature set: Serial port for device {addr} not (yet) known")
+            return
+        try:
+            temperature = float(msg.payload.decode())
+        except Exception as e:
+            logger.error(f"Invalid payload for target temperature set: {msg.payload}")
+            return
+        dst_addr = all_devices[addr].controller.address
+        serial_instance = serial_instances[all_devices[addr].serial_port]
+        logger.info(f"Sending temperature update from {addr} to {dst_addr} over {all_devices[addr].serial_port}. New target temperature: {temperature}")
+        # XXX TODO - duration should be configurable through MQTT (temporarily hardcoded)
+        serial_instance.send_temp_set_msg(addr, dst_addr, temperature, 120)
+
+
 def device_addr_str_from_bytes(addr: bytes) -> str:
     return addr.hex('-')
 
@@ -420,8 +493,7 @@ if __name__ == "__main__":
     with open(os.path.dirname(os.path.abspath(__file__)) + '/tech-sbus-mqtt.conf', 'r') as file:
         config = yaml.safe_load(file)
 
-    logging.basicConfig(filename=config["log_file"], encoding='utf-8', format=LOG_FORMAT, datefmt=LOG_DATEFORMAT,
-                        level=config.get("log_level", "INFO"))
+    logging.basicConfig(filename=config["log_file"], encoding='utf-8', format=LOG_FORMAT, level=config.get("log_level", "INFO"))
 
     with PidFile(config["pid_file"]):
 
@@ -437,11 +509,13 @@ if __name__ == "__main__":
         logger.info("Setting up and starting the serial port listeners.")
 
         for port in config["serial_ports"]:
-            serial_port = SerialPort(port, mqtt_publisher)
-            serial_port_thread = threading.Thread(target=serial_port, daemon=True)
-            serial_port_thread.start()
+            logger.info("Initializing SerialPort " + port)
+            serial_conn = serial.Serial(port, 115200, parity=serial.PARITY_EVEN, bytesize=serial.SEVENBITS, timeout=None)
+            serial_thread = serial.threaded.ReaderThread(serial_conn, SerialPortReader(mqtt_publisher))
+            serial_thread.start()
+            transport, serial_instance = serial_thread.connect()
+            serial_instances[port] = serial_instance
 
         mqtt_publisher()
 
         sys.exit(0)
-
