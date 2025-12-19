@@ -510,7 +510,7 @@ if __name__ == "__main__":
 
         for port in config["serial_ports"]:
             logger.info("Initializing SerialPort " + port)
-            serial_conn = serial.Serial(port, 115200, parity=serial.PARITY_EVEN, bytesize=serial.SEVENBITS, timeout=None)
+            serial_conn = serial.Serial(port, 115200, parity=serial.PARITY_NONE, bytesize=serial.EIGHTBITS, timeout=None)
             serial_thread = serial.threaded.ReaderThread(serial_conn, SerialPortReader(mqtt_publisher))
             serial_thread.start()
             transport, serial_instance = serial_thread.connect()
