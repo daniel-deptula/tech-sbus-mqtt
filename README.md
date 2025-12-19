@@ -126,6 +126,7 @@ What I currently know about the protocol: [TECH_RS485_PROTOCOL](TECH_RS485_PROTO
 - L-X WiFi - central controller
 - R-12S - wired room regulator with air temperature sensor, humidity sensor and a connector for floor temperature NTC sensor
 - CH341 RS485 to USB converter
+- Waveshare RS485 CAN HAT for Raspberry Pi
 
 # TO DO
 - RS485 publishing (for example changing target temperatures)
