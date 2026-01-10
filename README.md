@@ -2,9 +2,15 @@
 Tech SBUS to MQTT gateway
 
 # Overview
-The script listens to communication between "Tech Sterowniki" devices over a RS485 bus (Tech SBUS protocol) and publishes the messages over MQTT. It also publishes MQTT discovery messages for Home Assistant so if the MQTT integration is enabled all zones will automatically become visible in Home Assistant.
-It works fully locally, no connection to the Tech cloud / eModul is used. The updates are published over MQTT immediately  once received from the device.
-It requires an RS485 interface, I use USB to RS485 adapters based on CH341 chip which cost around $2-$3 and seem to be very reliable (I had one with FT232RL and it sometimes hung but maybe I had a broken one?).
+The script listens to communication between "Tech Sterowniki" devices over a RS485 bus (Tech SBUS protocol) and publishes the messages over MQTT.
+
+It allows to send temperature change commands.
+
+It also publishes MQTT discovery messages for Home Assistant so if the MQTT integration is enabled all zones will automatically become visible in Home Assistant.
+
+It works fully locally, no connection to the Tech cloud / eModul is used. The updates are published over MQTT immediately once received from the device.
+
+It requires an RS485 interface, I use USB to RS485 adapters that contain UART chip CH340C and RS485 transceiver MAX485, cost around $2-$3 and seem to be very reliable (I had one with FT232RL and it sometimes hung but maybe I had a broken one?).
 
 # Configuration
 The script requires a configuration file. It has to be placed in the script's directory, have name `tech-sbus-mqtt.conf` and the following yaml structure:
@@ -19,14 +25,17 @@ controllers:
         address: 00-00-00-02
         serial: 0001
         model: R-12S
+        default_duration: 1441
       - name: Childrens bedroom
         address: 00-00-00-03
         serial: 0002
         model: R-12S
+        default_duration: 1441
       - name: Master bedroom
         address: 00-00-00-04
         serial: 0003
         model: R-12S
+        default_duration: 1441
   - name: Downstairs
     address: 00-00-00-05
     serial: 00002
@@ -36,14 +45,17 @@ controllers:
         address: 00-00-00-06
         serial: 0004
         model: R-12S
+        default_duration: 1441
       - name: Kitchen
         address: 00-00-00-07
         serial: 0005
         model: R-12S
+        default_duration: 1441
       - name: Bathroom downstairs
         address: 00-00-00-08
         serial: 0006
         model: R-12S
+        default_duration: 1441
 
 serial_ports:
   - /dev/ttyUSB0
@@ -117,6 +129,36 @@ In this example `64-e5-70-3d` is the address of the room regulator on which the 
 When you have all the addresses collected, create the full configuration file and restart the script.
 Once the script is started and new devices and entities appear in Home Assistant, I recommend to restart the Tech controller(s) so that Home Assistant becomes immediately aware of all the zones and parameters which aren't repeated regularly (for example the target temperatures for each zone).
 
+# Setting temperatures by MQTT commands
+You can use MQTT to change temperatures.
+
+Temperature change request topic is "`topic_prefix`/`regulator_address`/temperature/air/target/set"
+
+The payload is a JSON object with two keys:
+* `temperature` - decimal number, range 5-35, Celsius degrees
+* `duration` (optional) - integer, range 0-1441, minutes, values 0 and 1441 have special meanings:
+  * `0` - switches back to the schedule (valid temperature has to be provided in the request although it's not used)
+  * `1441` - sets the target temperature for an indefinite period
+
+If the duration is not provided in the MQTT message, value `default_duration` from the config file is used - defaults to 1441 (indefinite).
+
+Example MQTT message to set target temperature to 25 degrees for 3 hours on regulator xx-yy-zz-xx:
+|topic|message|
+| --- | ----- |
+|techcontrollers/xx-yy-zz-xx/temperature/air/target/set|{"temperature": 25.0, "duration": 180}|
+
+Example MQTT message to set target temperature to 25 degrees on regulator xx-yy-zz-xx for an indefinite period of time:
+|topic|message|
+| --- | ----- |
+|techcontrollers/xx-yy-zz-xx/temperature/air/target/set|{"temperature": 25.0, "duration": 1441}|
+
+Example MQTT message to switch back to the schedule on xx-yy-zz-xx:
+|topic|message|
+| --- | ----- |
+|techcontrollers/xx-yy-zz-xx/temperature/air/target/set|{"temperature": 25.0, "duration": 0}|
+
+Standard Home Assistant climate cards don't support setting duration, only the temperature. Automations can be used to achieve that.
+
 # Protocol
 The script is a result of my reverse engineering of the protocol so only limited functionality is available at the moment. If time permits new features may be added in future because some more data is transmitted. Everyone's encouraged to contribute.\
 \
@@ -125,10 +167,9 @@ What I currently know about the protocol: [TECH_RS485_PROTOCOL](TECH_RS485_PROTO
 # Devices tested
 - L-X WiFi - central controller
 - R-12S - wired room regulator with air temperature sensor, humidity sensor and a connector for floor temperature NTC sensor
-- CH341 RS485 to USB converter
+- CH340/CH341 RS485<->USB converter
 - Waveshare RS485 CAN HAT for Raspberry Pi
 
 # TO DO
-- RS485 publishing (for example changing target temperatures)
 - Dockerfile, docker-compose
 
